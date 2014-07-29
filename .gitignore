@@ -1,0 +1,6 @@
+# sources
+/iscsi-scst-*.tar.gz
+
+# build artifacts
+/iscsi-scst-*.src.rpm
+/x86_64/
