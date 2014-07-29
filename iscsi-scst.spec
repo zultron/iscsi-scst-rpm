@@ -1,37 +1,48 @@
-# use --define "kernel X.Y.Z" to build for different kernel 
-# use --target i686 on i386
-%{!?kernel:%define kernel %(rpm -q kernel-source kernel-devel --qf "%{RPMTAG_VERSION}-%{RPMTAG_RELEASE}\\n" | tail -1)}
+# use --define "kver X.Y.Z" to build for different kernel 
+%{!?kernel:%define kver %(rpm -q kernel-devel --qf \\\
+    "%{RPMTAG_VERSION}-%{RPMTAG_RELEASE}\\n" | tail -1)}
+%global kmod_install_dir /lib/modules/%{kver}.%{_target_cpu}
+
+# Minimum scst version to depend on
+%global scst_version 2.0.0
+
+# kernel source directory
+%global kdir %{_usrsrc}/kernels/%{kver}.%{_target_cpu}
+
+# SCST module symbols file
+%global scst_module_symvers %{kdir}/scst/Module.symvers
+
 
 Summary: iSCSI SCST target kernel driver
 Name: iscsi-scst
-Version: 1.0.1.1
-Release: 4.cern
+Version: 2.2.1
+Release: 0
 License: GPL
 Buildroot: %{_tmppath}/%{name}-buildroot
 Group: Applications/File
-Source: %{name}-%{version}.tar.gz
-Packager: Andras.Horvath@cern.ch
 URL: http://scst.sourceforge.net/
-BuildRequires: scst-kernel-headers >= 1.0.1.1
+BuildRequires: scst-devel >= %{scst_version}
+BuildRequires: kmod-scst-devel
+%define tarball %{name}/%{name}-%{version}.tar.bz2
+Source0: http://sourceforge.net/projects/scst/files/%{tarball}
+Source1: %{name}.init.script
 
-Source1: iscsi-scst.init.script
 
 %description
-This driver is a forked with all respects version of iSCSI Enterprise
-Target (IET) (http://iscsitarget.sourceforge.net/) with updates to work
-over SCST as well as with many improvements and bugfixes (see ChangeLog
-file). The reason of fork is that the necessary changes are intrusive
-and with the current IET merge policy, where only simple bugfix-like
-patches, which doesn't touch the core code, could be merged, it is very
-unlikely that they will be merged in the main IET trunk.
+ISCSI-SCST is a deeply reworked fork of iSCSI Enterprise Target (IET)
+(http://iscsitarget.sourceforge.net). Reasons of the fork were:
+
+ - To be able to use full power of SCST core.
+ - To fix all the problems, corner cases issues and iSCSI standard
+   violations which IET has.
+
+See for more info http://iscsi-scst.sourceforge.net.
 
 
 %package target-utils
 Summary: iSCSI SCST target daemon and utility programs
 Group: Applications/File
-# I think it does ? 
-Requires: kernel-module-%{name}
-Obsoletes: iscsi-scst-utils
+
 
 %description target-utils
 This driver is a forked with all respects version of iSCSI Enterprise
@@ -42,18 +53,16 @@ and with the current IET merge policy, where only simple bugfix-like
 patches, which doesn't touch the core code, could be merged, it is very
 unlikely that they will be merged in the main IET trunk.
 
-%package -n kernel-module-%{name}-%{kernel}
+
+%package -n kmod-%{name}-%{kver}
 Summary: iSCSI SCST target driver, kernel modules
 Group: System Environment/Kernel
-Requires: kernel-%{_target_cpu} = %{kernel}
-# well, the 'or greater' below may not be necessarily true ...
-Requires: kernel-module-scst-%{kernel} >= 1.0.1.1
-BuildRequires: kernel-devel = %{kernel}
-Provides: kernel-module
-Provides: kernel-module-%{name} = %{version}-%{release}
-ExclusiveArch: i686 x86_64 ia64
+Requires: kernel-%{_target_cpu} = %{kver}
+Requires: kmod-scst-%{kver}
+Provides: kmod-%{name} = %{version}-%{release}
 
-%description -n kernel-module-%{name}-%{kernel}
+
+%description -n kmod-%{name}-%{kver}
 This driver is a forked with all respects version of iSCSI Enterprise
 Target (IET) (http://iscsitarget.sourceforge.net/) with updates to work
 over SCST as well as with many improvements and bugfixes (see ChangeLog
@@ -62,67 +71,62 @@ and with the current IET merge policy, where only simple bugfix-like
 patches, which doesn't touch the core code, could be merged, it is very
 unlikely that they will be merged in the main IET trunk.
 
-These modules were built for kernel %{kernel} on architecture %{arch}
+These modules were built for kernel %{kver}
+
 
 %prep
-%setup
-perl -p -i -e 's,/sbin/depmod,:,g' Makefile
+%setup -q
+
 
 %build
+make DESTDIR=%{buildroot} SCST_INC_DIR=/usr/include/scst SBINDIR=/usr/sbin \
+    KVER=%{kver}.%{_target_cpu} \
+    KDIR=%{_usrsrc}/kernels/%{kver}.%{_target_cpu} \
+    KBUILD_EXTRA_SYMBOLS=%{scst_module_symvers}
 
-make DESTDIR=%{buildroot} SCST_INC_DIR=/usr/include/scst SBINDIR=/usr/sbin KVER=%{kernel}
 
 %install
-rm -rf %{buildroot}
+make install DESTDIR=%{buildroot} SCST_INC_DIR=%{_includedir}/scst \
+    SBINDIR=%{_sbindir} MANDIR=%{_mandir} KVER=%{kver}.%{_target_cpu} \
+    KDIR=%{_usrsrc}/kernels/%{kver}.%{_target_cpu}
+# move kmodules into the scst directory
+mv %{buildroot}%{kmod_install_dir}/extra %{buildroot}%{kmod_install_dir}/scst
 
-make install DESTDIR=%{buildroot} SCST_INC_DIR=/usr/include/scst SBINDIR=/usr/sbin KVER=%{kernel}
-mkdir -p %{buildroot}/usr/share/doc/%{name}-%{version}-target-utils
-cp doc/iscsi-scst-howto.txt README ChangeLog* COPYING AskingQuestions ToDo %{buildroot}/usr/share/doc/%{name}-%{version}-target-utils
-mkdir -p %{buildroot}/usr/share/man/man{5,8}
-cp doc/manpages/*.8 %{buildroot}/usr/share/man/man8
-cp doc/manpages/*.5 %{buildroot}/usr/share/man/man5
-# no we do want docs in modules (since it will clash with docs elsewhere ..)
-#cp README ChangeLog COPYING AskingQuestions ToDo %{buildroot}/usr/share/doc/%{name}-%{version}-modules
+# init script
+mkdir -p %{buildroot}%{_initrddir}
+install -m 755 %{SOURCE1} %{buildroot}%{_initrddir}/%{name}
 
-# yes, I do not like included init script (and besides .. it won;t work)
-cp -f %{SOURCE1} %{buildroot}/etc/init.d/iscsi-scst
-chmod 755 %{buildroot}/etc/init.d/iscsi-scst
-# ok, no idea what should be in it ;-)
-touch %{buildroot}/etc/iscsi-scst.conf
-chmod 644 %{buildroot}/etc/iscsi-scst.conf
 
 %clean
 rm -rf %{buildroot}
 
+
 %files target-utils
-%defattr(-,root,root)
-/usr/sbin/iscsi-scst-adm
-/usr/sbin/iscsi-scstd
-/etc/init.d/iscsi-scst
-%config(noreplace) /etc/iscsi-scst.conf
-%doc /usr/share/doc
-%doc /usr/share/man
+%{_sbindir}/iscsi-scst-adm
+%{_sbindir}/iscsi-scstd
+%{_initrddir}/%{name}
+%doc AskingQuestions COPYING ChangeLog README ToDo
+%doc doc/iscsi-scst-howto.txt
+%doc %{_mandir}
 
-%doc /usr/share/doc/%{name}-%{version}-target-utils
 
-%files -n kernel-module-%{name}-%{kernel}
-%defattr(-,root,root)
-/lib/modules/%{kernel}/extra/iscsi-scst.ko
-#doc /usr/share/doc/%{name}-%{version}-modules
+%files -n kmod-%{name}-%{kver}
+%{kmod_install_dir}/scst/*.ko
 
-%post -n kernel-module-%{name}-%{kernel}
-/sbin/depmod -aeF /boot/System.map-%{kernel} %{kernel} > /dev/null || :
-# if we would need this in initrd we could add:
-#/sbin/mkinitrd --allow-missing -f /boot/initrd-%{kernel}.img %{kernel} > /dev/null || :
 
-%postun -n kernel-module-%{name}-%{kernel}
-/sbin/depmod -aeF /boot/System.map-%{kernel} %{kernel} > /dev/null || :
-# if we would need this in initrd we could add:
-#/sbin/mkinitrd --allow-missing -f /boot/initrd-%{kernel}.img %{kernel} > /dev/null || :
+%post -n kmod-%{name}-%{kver}
+/sbin/depmod -aeF /boot/System.map-%{kver}.%{_target_cpu} \
+    %{kver}.%{_target_cpu} > /dev/null || :
+
+
+%postun -n kmod-%{name}-%{kver}
+/sbin/depmod -aeF /boot/System.map-%{kver}.%{_target_cpu} \
+    %{kver}.%{_target_cpu} > /dev/null || :
 
 
 %post target-utils
 /sbin/chkconfig --add iscsi-scst || :
+
 
 %preun target-utils
 if [ "$1" = "0" ]; then
@@ -131,6 +135,7 @@ if [ "$1" = "0" ]; then
 fi
 exit 0
 
+
 %postun target-utils
 if [ "$1" -ge "1" ]; then
         /sbin/service iscsi-scst condrestart > /dev/null 2>&1
@@ -138,8 +143,18 @@ fi
 exit 0
 
 
-
 %changelog
+* Tue Jul 29 2014 John Morris <john@zultron.com> - 2.2.1-0
+- Update to v. 2.2.1
+- Update init script, cribbing from nslcd
+- Fix macros
+- Specfile modernizations
+- Update BRs: and R:s
+- Remove cruft
+- Rename kernel-module-* pkgs to kmod-*
+- Fix kbuild symbols
+- Fix %%docs
+
 * Mon Nov 23 2009  Jaroslaw Polok <jaroslaw.polok@cern.ch> 1.0.11-4.cern
 - renamed iscsi-scst-utils package to iscsi-scst-target-utils for more
   consistency with other iscsi packages (scsi-target-utils)
